@@ -1,8 +1,6 @@
 from __future__ import annotations
-import os, asyncio
+import os, asyncio, logging
 from fastapi import FastAPI, Query
-from fastapi.responses import JSONResponse
-from pydantic import BaseModel
 from dotenv import load_dotenv
 
 from .services.okx import (
@@ -12,65 +10,68 @@ from .services.okx import (
 from .services.ws_liq import get_liq_ws
 
 load_dotenv()
+log = logging.getLogger("uvicorn.error")
 
-app = FastAPI(title="tia-derivs-bridge", version="0.1.0")
+app = FastAPI(title="tia-derivs-bridge", version="0.1.1")
 
-class DerivsResponse(BaseModel):
-    derivs: dict
-    market_refs: dict
+@app.get("/")
+async def root():
+    return {"ok": True, "service": "tia-derivs-bridge"}
 
 @app.get("/health")
 async def health():
     return {"ok": True}
 
-@app.get("/btc-derivs", response_model=DerivsResponse)
+async def _safe(coro, name: str):
+    try:
+        return await coro
+    except Exception:
+        log.exception(f"{name} failed")
+        return None  # devolvemos None para no romper el JSON
+
+@app.get("/btc-derivs")
 async def btc_derivs(
     instId: str = Query(default="BTC-USDT-SWAP"),
     indexId: str = Query(default="BTC-USDT"),
     ccy: str = Query(default="BTC"),
     period: str = Query(default="15m"),
 ):
-    # Fetch en paralelo
-    funding_task = asyncio.create_task(fetch_funding_rate(instId))
-    mark_task    = asyncio.create_task(fetch_mark_price(instId))
-    index_task   = asyncio.create_task(fetch_index_ticker(indexId))
-    basis_task   = asyncio.create_task(fetch_basis_annualized(instId, indexId))
-    oi_task      = asyncio.create_task(fetch_open_interest_change(ccy, period))
-    lsr_task     = asyncio.create_task(fetch_long_short_ratio(ccy, period))
+    # Ejecutar en paralelo y tolerar errores individuales
+    funding, mark, index, basis, oi_chg, lsr = await asyncio.gather(
+        _safe(fetch_funding_rate(instId), "funding"),
+        _safe(fetch_mark_price(instId), "mark"),
+        _safe(fetch_index_ticker(indexId), "index"),
+        _safe(fetch_basis_annualized(instId, indexId), "basis"),
+        _safe(fetch_open_interest_change(ccy, period), "oi_change"),
+        _safe(fetch_long_short_ratio(ccy, period), "long_short_ratio"),
+    )
 
-    funding = await funding_task
-    mark    = await mark_task
-    index   = await index_task
-    basis   = await basis_task
-    oi_chg  = await oi_task
-    lsr     = await lsr_task
+    # Basis: si vino numérico, lo usamos; si no, None
+    perp_basis_annualized = basis if isinstance(basis, (int, float)) else None
 
-    perp_basis_annualized = basis  # premium (mark-index)/index en fracción
-
-    # Clústers de liquidaciones (WS necesita calentarse)
+    # Clústers de liquidaciones (pueden tardar en “calentarse”)
     up_pct = dn_pct = None
     try:
         ws = get_liq_ws(instId)
-        mark_px = mark.get("mark_price")
+        mark_px = mark.get("mark_price") if isinstance(mark, dict) else None
         if mark_px:
             up_pct, dn_pct = ws.nearest_pct(mark_px)
     except Exception:
-        pass
+        log.exception("liq nearest failed")
 
-    resp = {
+    return {
         "derivs": {
-            "funding_rate": funding.get("funding_rate"),
-            "funding_eta_min": funding.get("funding_eta_min"),
+            "funding_rate": (funding or {}).get("funding_rate") if isinstance(funding, dict) else None,
+            "funding_eta_min": (funding or {}).get("funding_eta_min") if isinstance(funding, dict) else None,
             "perp_basis_annualized": perp_basis_annualized,
-            "oi_change_15m": oi_chg,
-            "long_short_ratio": lsr,
+            "oi_change_15m": oi_chg if isinstance(oi_chg, (int, float)) else None,
+            "long_short_ratio": lsr if isinstance(lsr, (int, float)) else None,
             "nearest_liq_up_pct": up_pct,
             "nearest_liq_dn_pct": dn_pct
         },
         "market_refs": {
-            "mark_price": mark.get("mark_price"),
-            "index_px": index.get("index_px"),
-            "ts": mark.get("ts") or index.get("ts")
+            "mark_price": (mark or {}).get("mark_price") if isinstance(mark, dict) else None,
+            "index_px": (index or {}).get("index_px") if isinstance(index, dict) else None,
+            "ts": ((mark or {}).get("ts") if isinstance(mark, dict) else None) or ((index or {}).get("ts") if isinstance(index, dict) else None)
         }
     }
-    return JSONResponse(resp)
