@@ -5,8 +5,10 @@ from dotenv import load_dotenv
 
 from .services.okx import (
     fetch_funding_rate, fetch_mark_price, fetch_index_ticker,
-    fetch_basis_annualized, fetch_open_interest_change, fetch_long_short_ratio
+    fetch_basis_annualized, fetch_open_interest_change, fetch_long_short_ratio,
+    fetch_instrument_meta   # <-- NUEVO
 )
+
 from .services.ws_liq import get_liq_ws
 
 load_dotenv()
@@ -28,6 +30,23 @@ async def _safe(coro, name: str):
     except Exception:
         log.exception(f"{name} failed")
         return None  # devolvemos None para no romper el JSON
+from fastapi import Query
+
+@app.get("/meta")
+async def get_meta(
+    instId: str = Query(..., description="BTC-USDT-SWAP para perp, BTC-USDT para spot"),
+    instType: str = Query("SWAP", description="SWAP o SPOT")
+):
+    meta = await _safe(fetch_instrument_meta(instId, instType), "meta")
+    # meta ya viene normalizado; si hubo error, devolvemos defaults seguros
+    if not isinstance(meta, dict):
+        meta = {"instId": instId, "instType": instType, "tick_size": 0.1, "min_qty": 0.0}
+    return {"meta": {
+        "instId": meta.get("instId", instId),
+        "instType": meta.get("instType", instType),
+        "tick_size": meta.get("tick_size", 0.1),
+        "min_qty": meta.get("min_qty", 0.0)
+    }}
 
 @app.get("/btc-derivs")
 async def btc_derivs(
