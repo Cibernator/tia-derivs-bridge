@@ -100,3 +100,29 @@ async def fetch_long_short_ratio(ccy: str="BTC", period: str="15m") -> Optional[
             except Exception:
                 return None
     return None
+
+# --- NUEVO: meta del instrumento (tick_size, min_qty) ---
+async def fetch_instrument_meta(inst_id: str, inst_type: str = "SWAP"):
+    """
+    Lee /api/v5/public/instruments para obtener tickSz y minSz.
+    - inst_type: "SWAP" (perp), "SPOT", etc.
+    - devuelve dict con {"instId","instType","tick_size","min_qty","raw"}
+    """
+    try:
+        resp = await _get("/api/v5/public/instruments", {"instType": inst_type, "instId": inst_id})
+        item = (resp.get("data") or [{}])[0]
+    except Exception:
+        item = {}
+
+    # Campos típicos OKX
+    tick_sz = safe_float(item.get("tickSz"), 0.1)  # fallback 0.1 para BTC
+    min_sz  = safe_float(item.get("minSz"), 0.0)   # algunos instrumentos no lo traen
+
+    return {
+        "instId": item.get("instId", inst_id),
+        "instType": item.get("instType", inst_type),
+        "tick_size": tick_sz,
+        "min_qty": min_sz,
+        "raw": item
+    }
+
