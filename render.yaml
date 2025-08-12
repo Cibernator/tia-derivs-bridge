@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: tia-derivs-bridge
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: USE_RUBIK
+        value: "0"
+      - key: CACHE_TTL
+        value: "10"
+      - key: LIQ_WINDOW_SEC
+        value: "120"
+      - key: LIQ_MIN_CLUSTER_USD
+        value: "5000"
