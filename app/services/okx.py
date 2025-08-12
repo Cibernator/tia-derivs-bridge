@@ -21,10 +21,14 @@ async def _get(path: str, params: Dict[str, Any]) -> Dict[str, Any]:
     cached = default_cache.get(cache_key)
     if cached is not None:
         return cached
-    client = get_client()
-    r = await client.get(path, params=params)
-    r.raise_for_status()
-    data = r.json()
+    try:
+        client = get_client()
+        r = await client.get(path, params=params, headers={"Accept": "application/json"})
+        r.raise_for_status()
+        data = r.json()
+    except Exception:
+        # devolvemos dict vacío para que el caller degrade a None
+        return {}
     default_cache.set(cache_key, data)
     return data
 
